@@ -1,1 +1,166 @@
-const CACHE_VERSION="1741487993|384378144",CACHE_PREFIX="Five Nights at C-sw-cache-",CACHE_NAME=CACHE_PREFIX+CACHE_VERSION,OFFLINE_URL="index.offline.html",ENSURE_CROSSORIGIN_ISOLATION_HEADERS=!0,CACHED_FILES=["index.html","index.js","index.offline.html","index.icon.png","index.apple-touch-icon.png","index.audio.worklet.js","index.audio.position.worklet.js"],CACHEABLE_FILES=["index.wasm","index.pck"],FULL_CACHE=CACHED_FILES.concat(CACHEABLE_FILES);function ensureCrossOriginIsolationHeaders(e){if("require-corp"===e.headers.get("Cross-Origin-Embedder-Policy")&&"same-origin"===e.headers.get("Cross-Origin-Opener-Policy"))return e;const t=new Headers(e.headers);t.set("Cross-Origin-Embedder-Policy","require-corp"),t.set("Cross-Origin-Opener-Policy","same-origin");return new Response(e.body,{status:e.status,statusText:e.statusText,headers:t})}async function fetchAndCache(e,t,s){let n=await e.preloadResponse;return null==n&&(n=await self.fetch(e.request)),n=ensureCrossOriginIsolationHeaders(n),s&&t.put(e.request,n.clone()),n}self.addEventListener("install",(e=>{e.waitUntil(caches.open(CACHE_NAME).then((e=>e.addAll(CACHED_FILES))))})),self.addEventListener("activate",(e=>{e.waitUntil(caches.keys().then((function(e){return Promise.all(e.filter((e=>e.startsWith(CACHE_PREFIX)&&e!==CACHE_NAME)).map((e=>caches.delete(e))))})).then((function(){return"navigationPreload"in self.registration?self.registration.navigationPreload.enable():Promise.resolve()})))})),self.addEventListener("fetch",(e=>{const t="navigate"===e.request.mode,s=e.request.url||"",n=e.request.referrer||"",i=n.slice(0,n.lastIndexOf("/")+1),r=s.startsWith(i)?s.replace(i,""):"",a=FULL_CACHE.some((e=>e===r))||i===n&&i.endsWith(CACHED_FILES[0]);t||a?e.respondWith((async()=>{const s=await caches.open(CACHE_NAME);if(t){if((await Promise.all(FULL_CACHE.map((e=>s.match(e))))).some((e=>void 0===e)))try{return await fetchAndCache(e,s,a)}catch(e){return caches.match(OFFLINE_URL)}}let n=await s.match(e.request);if(null!=n)return n=ensureCrossOriginIsolationHeaders(n),n;return await fetchAndCache(e,s,a)})()):e.respondWith((async()=>{let t=await fetch(e.request);return t=ensureCrossOriginIsolationHeaders(t),t})())})),self.addEventListener("message",(e=>{if(e.origin!==self.origin)return;const t=e.source.id||"",s=e.data||"";self.clients.get(t).then((function(e){e&&("claim"===s?self.skipWaiting().then((()=>self.clients.claim())):"clear"===s?caches.delete(CACHE_NAME):"update"===s&&self.skipWaiting().then((()=>self.clients.claim())).then((()=>self.clients.matchAll())).then((e=>e.forEach((e=>e.navigate(e.url))))))}))}));
+// This service worker is required to expose an exported Godot project as a
+// Progressive Web App. It provides an offline fallback page telling the user
+// that they need an Internet connection to run the project if desired.
+// Incrementing CACHE_VERSION will kick off the install event and force
+// previously cached resources to be updated from the network.
+/** @type {string} */
+const CACHE_VERSION = '1741488558|949596156';
+/** @type {string} */
+const CACHE_PREFIX = 'Five Nights at C-sw-cache-';
+const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
+/** @type {string} */
+const OFFLINE_URL = 'index.offline.html';
+/** @type {boolean} */
+const ENSURE_CROSSORIGIN_ISOLATION_HEADERS = true;
+// Files that will be cached on load.
+/** @type {string[]} */
+const CACHED_FILES = ["index.html","index.js","index.offline.html","index.icon.png","index.apple-touch-icon.png","index.audio.worklet.js","index.audio.position.worklet.js"];
+// Files that we might not want the user to preload, and will only be cached on first load.
+/** @type {string[]} */
+const CACHEABLE_FILES = ["index.wasm","index.pck"];
+const FULL_CACHE = CACHED_FILES.concat(CACHEABLE_FILES);
+
+self.addEventListener('install', (event) => {
+	event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CACHED_FILES)));
+});
+
+self.addEventListener('activate', (event) => {
+	event.waitUntil(caches.keys().then(
+		function (keys) {
+			// Remove old caches.
+			return Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME).map((key) => caches.delete(key)));
+		}
+	).then(function () {
+		// Enable navigation preload if available.
+		return ('navigationPreload' in self.registration) ? self.registration.navigationPreload.enable() : Promise.resolve();
+	}));
+});
+
+/**
+ * Ensures that the response has the correct COEP/COOP headers
+ * @param {Response} response
+ * @returns {Response}
+ */
+function ensureCrossOriginIsolationHeaders(response) {
+	if (response.headers.get('Cross-Origin-Embedder-Policy') === 'require-corp'
+		&& response.headers.get('Cross-Origin-Opener-Policy') === 'same-origin') {
+		return response;
+	}
+
+	const crossOriginIsolatedHeaders = new Headers(response.headers);
+	crossOriginIsolatedHeaders.set('Cross-Origin-Embedder-Policy', 'require-corp');
+	crossOriginIsolatedHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
+	const newResponse = new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: crossOriginIsolatedHeaders,
+	});
+
+	return newResponse;
+}
+
+/**
+ * Calls fetch and cache the result if it is cacheable
+ * @param {FetchEvent} event
+ * @param {Cache} cache
+ * @param {boolean} isCacheable
+ * @returns {Response}
+ */
+async function fetchAndCache(event, cache, isCacheable) {
+	// Use the preloaded response, if it's there
+	/** @type { Response } */
+	let response = await event.preloadResponse;
+	if (response == null) {
+		// Or, go over network.
+		response = await self.fetch(event.request);
+	}
+
+	if (ENSURE_CROSSORIGIN_ISOLATION_HEADERS) {
+		response = ensureCrossOriginIsolationHeaders(response);
+	}
+
+	if (isCacheable) {
+		// And update the cache
+		cache.put(event.request, response.clone());
+	}
+
+	return response;
+}
+
+self.addEventListener(
+	'fetch',
+	/**
+	 * Triggered on fetch
+	 * @param {FetchEvent} event
+	 */
+	(event) => {
+		const isNavigate = event.request.mode === 'navigate';
+		const url = event.request.url || '';
+		const referrer = event.request.referrer || '';
+		const base = referrer.slice(0, referrer.lastIndexOf('/') + 1);
+		const local = url.startsWith(base) ? url.replace(base, '') : '';
+		const isCacheable = FULL_CACHE.some((v) => v === local) || (base === referrer && base.endsWith(CACHED_FILES[0]));
+		if (isNavigate || isCacheable) {
+			event.respondWith((async () => {
+				// Try to use cache first
+				const cache = await caches.open(CACHE_NAME);
+				if (isNavigate) {
+					// Check if we have full cache during HTML page request.
+					/** @type {Response[]} */
+					const fullCache = await Promise.all(FULL_CACHE.map((name) => cache.match(name)));
+					const missing = fullCache.some((v) => v === undefined);
+					if (missing) {
+						try {
+							// Try network if some cached file is missing (so we can display offline page in case).
+							const response = await fetchAndCache(event, cache, isCacheable);
+							return response;
+						} catch (e) {
+							// And return the hopefully always cached offline page in case of network failure.
+							console.error('Network error: ', e); // eslint-disable-line no-console
+							return caches.match(OFFLINE_URL);
+						}
+					}
+				}
+				let cached = await cache.match(event.request);
+				if (cached != null) {
+					if (ENSURE_CROSSORIGIN_ISOLATION_HEADERS) {
+						cached = ensureCrossOriginIsolationHeaders(cached);
+					}
+					return cached;
+				}
+				// Try network if don't have it in cache.
+				const response = await fetchAndCache(event, cache, isCacheable);
+				return response;
+			})());
+		} else if (ENSURE_CROSSORIGIN_ISOLATION_HEADERS) {
+			event.respondWith((async () => {
+				let response = await fetch(event.request);
+				response = ensureCrossOriginIsolationHeaders(response);
+				return response;
+			})());
+		}
+	}
+);
+
+self.addEventListener('message', (event) => {
+	// No cross origin
+	if (event.origin !== self.origin) {
+		return;
+	}
+	const id = event.source.id || '';
+	const msg = event.data || '';
+	// Ensure it's one of our clients.
+	self.clients.get(id).then(function (client) {
+		if (!client) {
+			return; // Not a valid client.
+		}
+		if (msg === 'claim') {
+			self.skipWaiting().then(() => self.clients.claim());
+		} else if (msg === 'clear') {
+			caches.delete(CACHE_NAME);
+		} else if (msg === 'update') {
+			self.skipWaiting().then(() => self.clients.claim()).then(() => self.clients.matchAll()).then((all) => all.forEach((c) => c.navigate(c.url)));
+		}
+	});
+});
+
