@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Five Nights at Candy's: Remastered</title>
+<!-- First: gain cross-origin isolation so threads/SharedArrayBuffer work even if the host
+     doesn't send COOP/COEP. On first visit it registers a SW and reloads once. Harmless if
+     the host already sets the headers. -->
+<script src="coi-serviceworker.js"></script>
+<style>
+  :root{--bg:#06060a;--ink:#e6e8f2;--dim:#6b6f86;--line:#1c1e2b;--accent:#8f7fd8;
+        --accent-dim:#4a4270;--amber:#ffc46b;--ok:#7fd8a4;--w:min(560px,82vw)}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);overflow:hidden}
+  #canvas{display:block;width:100%;height:100%;position:fixed;inset:0;outline:none;background:#000;
+          opacity:0;transition:opacity .4s ease}
+  #canvas.show{opacity:1}
+  #boot{position:fixed;inset:0;display:grid;place-items:center;z-index:5;
+        font:400 13px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:var(--ink)}
+  #boot.gone{opacity:0;pointer-events:none;transition:opacity .5s ease}
+  .vignette,.scan{position:fixed;inset:0;pointer-events:none;z-index:6}
+  .vignette{background:radial-gradient(120% 90% at 50% 45%,transparent 40%,#000 100%);opacity:.85}
+  .scan{background:repeating-linear-gradient(180deg,rgba(255,255,255,.035) 0 1px,transparent 1px 3px);mix-blend-mode:overlay}
+  main{width:var(--w);position:relative;z-index:7}
+  .brand{margin-bottom:34px}
+  .brand h1{margin:0;font-size:clamp(19px,3.4vw,26px);font-weight:400;letter-spacing:.30em;color:#fff;
+            text-shadow:0 0 18px rgba(143,127,216,.55),0 0 42px rgba(143,127,216,.22)}
+  .brand .sub{margin-top:9px;font-size:11px;letter-spacing:.62em;color:var(--accent)}
+  .phase{margin-bottom:20px;opacity:.30;transition:opacity .45s ease}
+  .phase.active,.phase.done{opacity:1}
+  .row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:7px}
+  .name{font-size:11px;letter-spacing:.24em;color:var(--dim)}
+  .phase.active .name{color:var(--ink)} .phase.done .bytes{color:var(--ok)}
+  .bytes{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .track{position:relative;height:3px;background:var(--line);overflow:hidden}
+  .fill{position:absolute;inset:0 auto 0 0;width:0%;
+        background:linear-gradient(90deg,var(--accent-dim),var(--accent));
+        box-shadow:0 0 12px rgba(143,127,216,.75);transition:width .18s linear}
+  .phase.done .fill{background:linear-gradient(90deg,#2f6b4d,var(--ok))}
+  .track.busy .fill{width:100%!important;background:linear-gradient(90deg,transparent,var(--accent),transparent);
+        animation:sweep 1.05s linear infinite;box-shadow:none}
+  @keyframes sweep{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+  .status{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
+          display:flex;align-items:baseline;justify-content:space-between;gap:14px}
+  .msg{font-size:11.5px;color:var(--dim);letter-spacing:.05em}
+  .msg b{color:var(--amber);font-weight:400}
+  .pct{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .err{margin-top:22px;padding:13px 15px;border:1px solid #6b2b2b;background:rgba(120,30,30,.14);
+       color:#ffb3b3;font-size:11.5px;display:none;line-height:1.65}
+  .err.show{display:block}
+  .meta{margin-top:12px;font-size:10px;letter-spacing:.1em;color:#3f4358}
+</style>
+</head>
+<body>
+<canvas id="canvas">HTML5 canvas unsupported.</canvas>
+<div id="boot">
+  <div class="vignette"></div><div class="scan"></div>
+  <main>
+    <div class="brand"><h1>FIVE NIGHTS AT CANDY'S</h1><div class="sub">REMASTERED</div></div>
+    <div class="phase" id="p-engine"><div class="row"><span class="name">ENGINE</span>
+      <span class="bytes" id="b-engine">—</span></div><div class="track"><div class="fill" id="f-engine"></div></div></div>
+    <div class="phase" id="p-pack"><div class="row"><span class="name">GAME DATA</span>
+      <span class="bytes" id="b-pack">—</span></div><div class="track"><div class="fill" id="f-pack"></div></div></div>
+    <div class="status"><span class="msg" id="msg">standby</span><span class="pct" id="pct">0%</span></div>
+    <div class="meta" id="meta"></div>
+    <div class="err" id="err"></div>
+  </main>
+</div>
+
+<!-- fzstd (streaming zstd decoder, ~8 KB) then the Godot engine loader is injected after the header is read -->
+<script src="fzstd.js"></script>
+<script>
+"use strict";
+/* ======================================================================================
+   FNAC:R web shell — single-file (game.fzb) + streaming zstd + adaptive threads.
+
+   game.fzb = "FZB1" | u32 headerLen | JSON header | zstd(wasm) | zstd(pck)
+   The header names each section's byte range. We fetch the two ranges CONCURRENTLY and
+   stream each through fzstd:
+     * wasm  -> a Response(application/wasm) fed to WebAssembly.instantiateStreaming
+     * pck   -> a Response Godot reads via response.body.getReader(), i.e. decompressed
+                bytes flow straight into the engine's memory (no whole second copy).
+   We do this by shimming window.fetch for exactly the engine's <exe>.wasm / <exe>.pck
+   requests; every other request (worklets, service worker) passes through untouched.
+   ====================================================================================== */
+const BUNDLE = "game.fzb";
+const $ = (id) => document.getElementById(id);
+const MB = 1048576;
+const _realFetch = window.fetch.bind(window);   // captured before we shim window.fetch
+
+/* ---------- adaptive worker pool (smaller on low-end phones) ---------- */
+const CORES = navigator.hardwareConcurrency || 4;
+const EM_POOL = Math.max(2, Math.min(8, CORES));       // emscripten pthread workers
+const GD_POOL = Math.max(1, Math.min(4, CORES - 1));   // Godot task threads
+
+/* ---------- tiny UI ---------- */
+const ui = {
+  phase:(id,s)=>{ $("p-"+id).className="phase "+s; },
+  busy:(id,on)=>{ $("f-"+id).parentElement.classList.toggle("busy",on); },
+  bar:(id,f)=>{ $("f-"+id).style.width=(Math.max(0,Math.min(1,f))*100).toFixed(1)+"%"; },
+  bytes:(id,g,t)=>{ $("b-"+id).textContent=(g/MB).toFixed(1)+(t?" / "+(t/MB).toFixed(1):"")+" MB"; },
+  say:(h)=>{ $("msg").innerHTML=h; },
+  pct:(f)=>{ $("pct").textContent=Math.round(f*100)+"%"; },
+  fail:(h)=>{ $("err").innerHTML=h; $("err").classList.add("show"); ui.say("halted"); },
+};
+$("meta").textContent = CORES+" cores · pool "+EM_POOL+"/"+GD_POOL;
+
+/* ---------- range fetch of one section, streamed through fzstd ---------- *
+ * Returns a ReadableStream of DECOMPRESSED bytes. Only in-flight chunks and fzstd's
+ * window buffer are ever resident -- the full decompressed section is never one buffer. */
+function decompressedStream(sec, onComp){
+  return new ReadableStream({
+    async start(controller){
+      try{
+        const end = sec.off + sec.zsize - 1;
+        let resp = await _realFetch(BUNDLE, {headers:{Range:`bytes=${sec.off}-${end}`}});
+        let body;
+        if (resp.status === 206){
+          body = resp.body;                                  // server honoured Range: stream it
+        } else {                                             // no Range support: slice the whole file once
+          body = sliceStream(await wholeBundle(), sec.off, sec.zsize);
+        }
+        const dec = new fzstd.Decompress(chunk => controller.enqueue(chunk));
+        const reader = body.getReader();
+        for(;;){
+          const {done, value} = await reader.read();
+          if (done){ dec.push(new Uint8Array(0), true); controller.close(); return; }
+          if (onComp) onComp(value.length);
+          dec.push(value, false);                            // sync decode; value released after
+        }
+      }catch(e){ controller.error(e); }
+    }
+  });
+}
+let _whole = null;
+function wholeBundle(){ return _whole || (_whole = _realFetch(BUNDLE).then(r=>r.arrayBuffer())); }
+function sliceStream(buf, off, len){
+  const u = new Uint8Array(buf, off, len);
+  return new ReadableStream({ start(c){ c.enqueue(u); c.close(); } });
+}
+
+/* ---------- read the header, wire the fetch shim, launch the engine ---------- */
+async function boot(){
+  try{
+    ui.say('reading bundle');
+    const head = new Uint8Array(await (await _realFetch(BUNDLE,{headers:{Range:"bytes=0-1031"}})).arrayBuffer());
+    if (String.fromCharCode(head[0],head[1],head[2],head[3]) !== "FZB1")
+      throw new Error("game.fzb: bad magic (rebuild with webbundle.py)");
+    const hlen = head[4] | (head[5]<<8) | (head[6]<<16) | (head[7]<<24);
+    const hdr = JSON.parse(new TextDecoder().decode(head.subarray(8, 8+hlen)));
+    const exe = hdr.exe, S = hdr.sections;
+    ui.bytes("engine",0,S.wasm.size); ui.bytes("pack",0,S.pck.size);
+
+    // progress accounting (weight by decompressed size)
+    const W = { engine:0.34, pack:0.66 };
+    const prog = { engine:0, pack:0 };
+    const tick = ()=> ui.pct(prog.engine*W.engine + prog.pack*W.pack);
+
+    // decompressed-byte counters -> bars
+    const seenPck=[0];
+    const pckStream = ()=> {
+      ui.phase("pack","active");
+      return decompressedStream(S.pck)  // count on the DECOMPRESSED side via a tee-less wrapper
+        .pipeThrough(counter(n=>{ seenPck[0]+=n; prog.pack=Math.min(.99,seenPck[0]/S.pck.size);
+                                  ui.bar("pack",prog.pack); ui.bytes("pack",seenPck[0],S.pck.size); tick(); }));
+    };
+    const seenW=[0];
+    const wasmStream = ()=> {
+      ui.phase("engine","active");
+      return decompressedStream(S.wasm)
+        .pipeThrough(counter(n=>{ seenW[0]+=n; prog.engine=Math.min(.99,seenW[0]/S.wasm.size);
+                                  ui.bar("engine",prog.engine); ui.bytes("engine",seenW[0],S.wasm.size); tick(); }));
+    };
+
+    // shim fetch for exactly the engine's two files; everything else passes through
+    const isWasm = (u)=> u.endsWith(exe+".wasm");
+    const isPck  = (u)=> u.endsWith(exe+".pck");
+    window.fetch = (input, init)=>{
+      let u = (typeof input==="string") ? input : input.url;
+      try { u = decodeURIComponent(u); } catch(_){}
+      if (isWasm(u)){ ui.say("compiling engine <b>while it streams</b>"); ui.busy("engine",true);
+        return Promise.resolve(new Response(wasmStream(), {headers:{"Content-Type":"application/wasm"}})); }
+      if (isPck(u)){ ui.say("streaming game data into engine");
+        return Promise.resolve(new Response(pckStream(), {headers:{"Content-Type":"application/octet-stream"}})); }
+      return _realFetch(input, init);
+    };
+
+    // GODOT_CONFIG with the ADAPTIVE pool; executable name drives the shimmed URLs
+    window.GODOT_CONFIG = {
+      "args":[], "canvasResizePolicy":2, "ensureCrossOriginIsolationHeaders":true,
+      "executable":exe, "experimentalVK":false, "focusCanvas":true, "gdextensionLibs":[],
+      "emscriptenPoolSize":EM_POOL, "godotPoolSize":GD_POOL,
+      "fileSizes":{ [exe+".pck"]:S.pck.size, [exe+".wasm"]:S.wasm.size },
+      "serviceWorker": exe+".service.worker.js",
+    };
+
+    // load the engine loader (<exe>.js) then start
+    await loadScript(encodeURI(exe)+".js");
+    if (Engine.getMissingFeatures({threads:true}).length)
+      throw new Error("This browser lacks the features threads need (SharedArrayBuffer). "
+                    + "Serve with cross-origin isolation, or use a current desktop browser.");
+    const engine = new Engine(window.GODOT_CONFIG);
+    ui.busy("pack",true);
+    await engine.startGame({ onProgress:()=>{} });
+    ui.busy("engine",false); ui.busy("pack",false);
+    ui.phase("engine","done"); ui.phase("pack","done"); ui.pct(1); ui.say("ready");
+    $("canvas").classList.add("show");
+    const boot=$("boot"); boot.classList.add("gone"); setTimeout(()=>boot.remove(),600);
+    $("canvas").focus();
+  }catch(e){
+    ui.fail("<b>load failed</b><br>"+(e&&e.message||e));
+  }
+}
+/* count bytes flowing through a stream without buffering it */
+function counter(cb){ return new TransformStream({ transform(chunk,c){ cb(chunk.length); c.enqueue(chunk); } }); }
+function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement("script");
+  s.src=src; s.onload=res; s.onerror=()=>rej(new Error("failed to load "+src)); document.body.appendChild(s); }); }
+
+boot();
+</script>
+</body>
+</html>
