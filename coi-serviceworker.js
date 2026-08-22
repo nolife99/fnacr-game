@@ -1,7 +1,1 @@
-/*! coi-serviceworker — enable cross-origin isolation (SharedArrayBuffer / threads) on hosts
-    that don't send COOP/COEP themselves (itch.io, GitHub Pages, plain static hosts).
-    Based on Guido Zuidhof's coi-serviceworker (MIT). If your host CAN set the two headers
-      Cross-Origin-Opener-Policy: same-origin
-      Cross-Origin-Embedder-Policy: require-corp
-    prefer that and you don't need this file at all. */
 "undefined"==typeof window?(self.addEventListener("install",()=>self.skipWaiting()),self.addEventListener("activate",e=>e.waitUntil(self.clients.claim())),self.addEventListener("message",e=>{e.data&&"deregister"===e.data.type&&self.registration.unregister()}),self.addEventListener("fetch",function(e){const r=e.request;"only-if-cached"===r.cache&&"same-origin"!==r.mode||e.respondWith(fetch(r).then(e=>{if(0===e.status)return e;const r=new Headers(e.headers);return r.set("Cross-Origin-Embedder-Policy","require-corp"),r.set("Cross-Origin-Opener-Policy","same-origin"),new Response(e.body,{status:e.status,statusText:e.statusText,headers:r})}).catch(e=>console.error(e)))})):(()=>{if(!1!==window.crossOriginIsolated)return;if(!window.isSecureContext)return void console.warn("coi: needs HTTPS (or localhost)");const e=document.currentScript&&document.currentScript.src||"coi-serviceworker.js";navigator.serviceWorker&&navigator.serviceWorker.register(e).then(e=>{e.addEventListener("updatefound",()=>window.location.reload()),e.active&&!navigator.serviceWorker.controller&&window.location.reload()},e=>console.error("coi: SW registration failed",e))})();
